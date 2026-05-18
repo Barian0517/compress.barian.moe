@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { getFFmpeg } from '@/src/lib/ffmpeg';
 import { fetchFile } from '@ffmpeg/util';
 import imageCompression from 'browser-image-compression';
+import JSZip from 'jszip';
 import { toast } from 'sonner';
 
 type FileType = 'video' | 'image' | 'audio';
@@ -57,7 +58,10 @@ const TRANSLATIONS = {
     footer: "© 2026 Free Offline Compressor. All processing happens in your browser.",
     compressedTo: "Compressed to",
     compressionFailed: "Compression failed",
-    langToggle: "中文"
+    langToggle: "中文",
+    downloadAll: "Download All (ZIP)",
+    zipping: "Zipping...",
+    zipFailed: "Failed to create ZIP"
   },
   zh: {
     title: "免費離線壓縮",
@@ -79,7 +83,10 @@ const TRANSLATIONS = {
     footer: "© 2026 免費離線壓縮。所有處理皆在您的瀏覽器中完成，保障隱私。",
     compressedTo: "已壓縮至",
     compressionFailed: "壓縮失敗",
-    langToggle: "English"
+    langToggle: "English",
+    downloadAll: "打包下載 (ZIP)",
+    zipping: "打包中...",
+    zipFailed: "打包失敗"
   }
 };
 
@@ -94,6 +101,7 @@ interface FileItem {
   error?: string;
   customLevel?: CompressionLevel;
   customFormat?: string;
+  compressedName?: string;
 }
 
 const Compressor: React.FC = () => {
@@ -109,6 +117,7 @@ const Compressor: React.FC = () => {
   const [compressionLevel, setCompressionLevel] = useState<CompressionLevel>('medium');
   const [isAdvancedMode, setIsAdvancedMode] = useState(false);
   const [isProcessingAll, setIsProcessingAll] = useState(false);
+  const [isZipping, setIsZipping] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getFileType = (file: File): FileType => {
@@ -166,18 +175,23 @@ const Compressor: React.FC = () => {
     try {
       if (type === 'image') {
         const compressed = await compressImage(file, level, format);
+        const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+        const finalName = `${baseName}_compressed.${format}`;
         setFiles(prev => prev.map(f => f.id === id ? { 
           ...f, 
           status: 'completed', 
           progress: 100, 
           compressedBlob: compressed,
-          compressedSize: compressed.size
+          compressedSize: compressed.size,
+          compressedName: finalName
         } : f));
       } else {
         // Video or Audio using FFmpeg
         const ffmpeg = await getFFmpeg();
+        const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
         const inputName = `input_${id}_${file.name}`;
-        const outputName = `output_${id}_${file.name.split('.')[0]}.${format}`;
+        const outputName = `output_${id}_${baseName}.${format}`;
+        const finalName = `${baseName}_compressed.${format}`;
 
         await ffmpeg.writeFile(inputName, await fetchFile(file));
 
@@ -219,7 +233,8 @@ const Compressor: React.FC = () => {
           status: 'completed', 
           progress: 100, 
           compressedBlob,
-          compressedSize: compressedBlob.size
+          compressedSize: compressedBlob.size,
+          compressedName: finalName
         } : f));
 
         // Cleanup
@@ -242,12 +257,40 @@ const Compressor: React.FC = () => {
     setIsProcessingAll(false);
   };
 
+  const downloadAllAsZip = async () => {
+    setIsZipping(true);
+    try {
+      const zip = new JSZip();
+      const completedFiles = files.filter(f => f.status === 'completed' && f.compressedBlob);
+      
+      completedFiles.forEach(f => {
+        const name = f.compressedName || f.file.name;
+        zip.file(name, f.compressedBlob!);
+      });
+      
+      const content = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'OmniCompress_Output.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Zip generation failed', error);
+      toast.error(t.zipFailed);
+    } finally {
+      setIsZipping(false);
+    }
+  };
+
   const downloadFile = (fileItem: FileItem) => {
     if (!fileItem.compressedBlob) return;
     const url = URL.createObjectURL(fileItem.compressedBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `compressed_${fileItem.file.name}`;
+    a.download = fileItem.compressedName || `compressed_${fileItem.file.name}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -339,20 +382,42 @@ const Compressor: React.FC = () => {
                 </Label>
               </div>
             </div>
-            <Button 
-              onClick={processAll} 
-              disabled={isProcessingAll || files.every(f => f.status === 'completed')}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              {isProcessingAll ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {t.processing}
-                </>
-              ) : (
-                t.compressAll
+            <div className="flex items-center space-x-3">
+              {files.some(f => f.status === 'completed') && (
+                <Button 
+                  onClick={downloadAllAsZip} 
+                  disabled={isZipping}
+                  variant="outline"
+                  className="border-green-200 text-green-700 hover:bg-green-50"
+                >
+                  {isZipping ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {t.zipping}
+                    </>
+                  ) : (
+                    <>
+                      <Download className="mr-2 h-4 w-4" />
+                      {t.downloadAll}
+                    </>
+                  )}
+                </Button>
               )}
-            </Button>
+              <Button 
+                onClick={processAll} 
+                disabled={isProcessingAll || files.every(f => f.status === 'completed')}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {isProcessingAll ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t.processing}
+                  </>
+                ) : (
+                  t.compressAll
+                )}
+              </Button>
+            </div>
           </div>
 
           <div className="grid gap-4">
